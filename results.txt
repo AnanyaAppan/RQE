@@ -1,0 +1,24 @@
+SELECT n_name from NATION N, REGION R WHERE N.n_regionkey = R.r_regionkey
+
+SELECT nation_0.n_name 
+FROM region region_0 , nation nation_0 
+WHERE nation_0.n_regionkey=region_0.r_regionkey
+
+-----------------------------------------------------------------------------------------------------
+
+SELECT * FROM NATION
+
+SELECT nation_0_1_2_3_4_5.nation_fk1, nation_0_1_2_3_4_5.n_name, nation_0_1_2_3_4_5.n_regionkey, nation_0_1_2_3_4_5.n_comment, nation_0_1_2_3_4_5.n_nationkey, nation_0_1_2_3_4_5.tid 
+FROM nation nation_0_1_2_3_4_5
+
+-----------------------------------------------------------------------------------------------------
+
+select s_acctbal, s_name, p_partkey, p_mfgr
+from part, supplier, partsupp
+where p_partkey = ps_partkey and s_suppkey = ps_suppkey
+
+SELECT supplier_0.s_acctbal, supplier_1.s_name, part_0.p_partkey, part_1.p_mfgr 
+FROM supplier supplier_0 , partsupp partsupp_0_1_2_3 , supplier supplier_1 , part part_0 , part part_1 
+WHERE supplier_0.s_suppkey=partsupp_0_1_2_3.ps_suppkey and supplier_1.s_suppkey=partsupp_0_1_2_3.ps_suppkey and part_0.p_partkey=partsupp_0_1_2_3.ps_partkey and part_1.p_partkey=partsupp_0_1_2_3.ps_partkey
+
+
