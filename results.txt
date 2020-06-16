@@ -21,4 +21,25 @@ SELECT supplier_0.s_acctbal, supplier_1.s_name, part_0.p_partkey, part_1.p_mfgr
 FROM supplier supplier_0 , partsupp partsupp_0_1_2_3 , supplier supplier_1 , part part_0 , part part_1 
 WHERE supplier_0.s_suppkey=partsupp_0_1_2_3.ps_suppkey and supplier_1.s_suppkey=partsupp_0_1_2_3.ps_suppkey and part_0.p_partkey=partsupp_0_1_2_3.ps_partkey and part_1.p_partkey=partsupp_0_1_2_3.ps_partkey
 
+--------------------------------------------------------------------------------------------------------
+
+select l_orderkey, o_orderdate, o_shippriority
+from customer, orders, lineitem
+where c_custkey = o_custkey and l_orderkey = o_orderkey
+
+SELECT lineitem_0.l_orderkey, orders_4_0_1.o_orderdate, orders_4_0_1.o_shippriority FROM lineitem lineitem_0 , customer customer_0_1_2 , orders orders_4_0_1 WHERE lineitem_0.l_orderkey=orders_4_0_1.o_orderkey and orders_4_0_1.o_custkey=customer_0_1_2.c_custkey
+
+---------------------------------------------------------------------------------------------------------
+
+SELECT PS.ps_supplycost, L.l_shipdate, O.o_orderdate 
+FROM partsupp as PS, partsupp as PS1, Part as P, supplier as S, lineitem as L, lineitem as L1, orders as O 
+WHERE PS1.ps_suppkey = S.s_suppkey and S.s_suppkey = PS.ps_suppkey and PS1.ps_partkey = P.p_partkey and P.p_partkey = L.l_partkey and PS1.ps_partkey = L1.l_partkey and PS1.ps_suppkey = L1.l_suppkey and L1.l_orderkey = O.o_orderkey
+
+SELECT partsupp_0.ps_supplycost, lineitem_16.l_shipdate, orders_9.o_orderdate 
+FROM partsupp partsupp_0 , lineitem lineitem_1 , partsupp partsupp_6 , lineitem lineitem_15_19_28 , partsupp partsupp_7 , lineitem lineitem_16 , orders orders_9 , lineitem lineitem_22 , partsupp partsupp_24 
+WHERE partsupp_0.ps_suppkey=lineitem_1.l_suppkey and lineitem_1.l_suppkey=partsupp_6.ps_suppkey and partsupp_6.ps_suppkey=lineitem_15_19_28.l_suppkey and partsupp_7.ps_suppkey=lineitem_15_19_28.l_suppkey and partsupp_24.ps_suppkey=lineitem_15_19_28.l_suppkey and lineitem_16.l_partkey=partsupp_7.ps_partkey and orders_9.o_orderkey=lineitem_22.l_orderkey and lineitem_22.l_suppkey=partsupp_24.ps_suppkey
+
+--------------------------------------------------------------------------------------------------------------------
+
+
 

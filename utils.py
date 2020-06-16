@@ -261,7 +261,7 @@ def bottom_up_prune(tree,root,prev_node,is_star) :
     return tree
     
 
-def gen_instance_trees(connection,possib) : 
+def gen_instance_trees(connection,possib,depth) : 
 
     tables = get_tables(connection)
     table_dict = get_table_dict(connection,tables)
@@ -269,7 +269,6 @@ def gen_instance_trees(connection,possib) :
     primary_keys = get_primary_keys(connection)
     foreign_key_dict = get_foreign_key_dict(primary_keys,foreign_keys)
     primary_key_dict = get_primary_key_dict(foreign_key_dict)
-    depth = 1
     tree_dict = {}
     table_count = {}
     for table in table_dict :
@@ -278,8 +277,6 @@ def gen_instance_trees(connection,possib) :
     for col in possib :
         table_count,tree = get_instance_tree(table_count,col,foreign_key_dict,primary_key_dict,depth)
         tree_dict[col] = tree
-        # nx.draw(tree,with_labels=True)
-        # plt.show()
     
     star_ctrs = set([table for table in table_dict])
     for col_out in tree_dict :
@@ -361,10 +358,10 @@ def ExploreInstanceTree(conn,tree,val) :
     # plt.show()
 
 def draw_tree(tree) :
-    attr = nx.get_node_attributes(tree,'tid')
+    attr = nx.get_node_attributes(tree,'star')
     pos = nx.spring_layout(tree)
     nx.draw(tree, pos,with_labels=True)
-    # nx.draw_networkx_labels(tree, pos, labels = attr)
+    nx.draw_networkx_labels(tree, pos, labels = attr)
     plt.show()
 
 def del_empty_tid(tree) :
@@ -409,41 +406,41 @@ def cross_tuple_prune(valid,prev_valid,star):
     if(prev_valid==None): return valid
     if(star not in prev_valid): prev_valid[star] = valid[star]
     prev_valid_tids = [k for k in prev_valid[star].keys()]
+    valid_tids = [k for k in valid[star].keys()]
+    
+    for tid in valid_tids :
+        if tid in prev_valid_tids :
+            cols = [k for k in prev_valid[star][tid].keys()]
+            for col in cols:
+                if col in valid[star][tid] :
+                    prev_valid[star][tid][col] = prev_valid[star][tid][col].intersection(valid[star][tid][col])
+                else :
+                    del prev_valid[star][tid][col]
+        else :
+            prev_valid[star][tid] = valid[star][tid]
     for tid in prev_valid_tids :
+        if tid not in valid_tids :
+            del prev_valid[star][tid]
+        else :
+            for col in prev_valid[star][tid]:
+                prev_valid[star][tid][col] = prev_valid[star][tid][col].union(valid[star][tid][col])
         # if tid not in valid[star] : del prev_valid[star][tid]
         # else : 
-        for col in prev_valid[star][tid]:
-            if tid in valid[star] : 
-                if col in valid[star][tid] : 
-                    prev_valid[star][tid][col] = prev_valid[star][tid][col].intersection(valid[star][tid][col])
+        # for col in prev_valid[star][tid]:
+        #     if tid in valid[star] : 
+        #         if col in valid[star][tid] : 
+        #             prev_valid[star][tid][col] = prev_valid[star][tid][col].intersection(valid[star][tid][col])
     return prev_valid    
 
 def updateStarCtrs(tree_dict,star,prev_valid):
-    # l = []
-    # for col in tree_dict:
-    #     tree = tree_dict[col]
-    #     tid_lists = [y['tid'] for x,y in tree.nodes(data=True) if x.split('_')[0]==star]
-    #     tid_union = set()
-    #     for tid_list in tid_lists :
-    #         tid_union = tid_union.union(set(tid_list))
-    #     l.append(tid_union)
-    # tid_intersection = l[0]
-    # for tids in l[1:]:
-    #     tid_intersection = tid_intersection.intersection(tids)
-    
-    # for col in tree_dict:
-    #     tree = tree_dict[col]
-    #     stars_to_be_removed = [x for x,y in tree.nodes(data=True) 
-    #                         if (tid_intersection.intersection(list(y['tid']))==set() and x.split('_')[0]==star)]
-    #     is_star = nx.get_node_attributes(tree,'star')
-    #     for star in stars_to_be_removed:
-    #         is_star[star] = 0
-    #     nx.set_node_attributes(tree,is_star,'star')
-    #     tree_dict[col] = bottom_up_prune(tree,list(tree.nodes())[0],None,is_star)
-    #     # draw_tree(tree)
 
     valid = get_valid(tree_dict,star,True)
+    # print("valid")
+    # print(valid)
     new_valid = cross_tuple_prune(valid,prev_valid,star)
+    # print("\nnew valid")
+    # print(new_valid)
+    # print("-----------------------------------------------------------------------------\n")
     for col in tree_dict:
         tree = tree_dict[col]
         is_star = nx.get_node_attributes(tree,'star')
@@ -592,23 +589,39 @@ def get_query_from_graph (graph) :
     # print(query)
     return query
 
-def gen_lattice(graph,df) :
+def df_equals(df1,df2) :
+    # print(df1)
+    # print(df2)
+    vals_df1 = df1.sort_index(axis=1).values
+    vals_df2 = df2.sort_index(axis=1).values
+    if(len(vals_df1) != len(vals_df2)): return False
+    if(len(vals_df1[0]) != len(vals_df2[0])): return False
+    for i in range(len(vals_df1)) :
+        for j in range(len(vals_df1[0])):
+            if(str(vals_df1[i][j]) != str(vals_df2[i][j])):
+                return False
+    return True
 
+def gen_lattice(graph,df,merge_list) :
+    # draw_tree(graph)
     try :
         query = get_query_from_graph(graph)
         res_df = execute_query(query)
-        if df.sort_index(axis=1).equals(res_df.sort_index(axis=1)) :
+        if df_equals(df,res_df):
+            print(df)
+            print(res_df)
             return query
     except : pass
 
     gen_graphs = []
-    tids = nx.get_node_attributes(graph,'tid')
     nodes = list(graph.nodes())
     for i in range(len(nodes)):
         node1 = nodes[i]
         for j in range(i+1 , len(nodes)):
             node2 = nodes[j]
-            if node1.split('_')[0] == node2.split('_')[0] and tids[node1].intersection(tids[node2]) != set():
+            table1 = node1.split('_')[0] 
+            table2 = node2.split('_')[0]
+            if table1 == table2 and node1 in merge_list[table1] and node2 in merge_list[table1]:
                 new_graph = nx.Graph(graph)
                 merge(new_graph,node1,node2)
                 is_isomorphic = False
@@ -620,7 +633,7 @@ def gen_lattice(graph,df) :
                     gen_graphs.append(new_graph)
 
     for ele in gen_graphs :
-        ret = gen_lattice(ele,df)
+        ret = gen_lattice(ele,df,merge_list)
         if(ret != None) :
             return ret
     return None
