@@ -4,15 +4,10 @@ import pandas as pd
 
 def main () :
     try:
-        conn = psycopg2.connect("dbname=tpch host='localhost' user='ananya' password='*Rasika0507'")
-        sql = """select l_orderkey, o_orderdate, o_shippriority
-                from customer, orders, lineitem
-                where c_custkey = o_custkey and l_orderkey = o_orderkey"""
-        # sql = """
-        # select l_orderkey, o_orderdate, o_shippriority
-        # from customer, orders, lineitem
-        # where c_custkey = o_custkey and l_orderkey = o_orderkey
-        # """
+        conn = psycopg2.connect("dbname=tpch2 host='localhost' user='ananya' password='*Rasika0507'")
+        sql = """select s_acctbal, s_name, p_partkey, p_mfgr
+from part, supplier, partsupp
+where p_partkey = ps_partkey and s_suppkey = ps_suppkey"""
         dat = pd.read_sql_query(sql, conn)
         dat.to_csv('query.csv') 
 
@@ -22,4 +17,5 @@ def main () :
 
 if __name__ == "__main__" :
     main ()
+
     

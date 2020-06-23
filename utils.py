@@ -7,6 +7,16 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import sys
 
+def post_process(tables,connection) :
+    cursor = connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    for table in tables :
+        cursor.execute("""
+                    ALTER TABLE %s
+                    DROP COLUMN TID
+                    """%table)
+    cursor.close
+    connection.commit()
+
 def pre_process(tables,connection) :
     cursor = connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     for table in tables :
@@ -119,9 +129,21 @@ def get_foreign_keys(connection) :
         col['fk_columns'] = ','.join(col['fk_columns']).strip()
     return columns
 
+def get_col_type (connection,col_name,table_name) :
+    """
+    Gets type of values of a clomun, given table and column name
+    """
+    query = """SELECT %s
+                FROM %s
+                LIMIT 1
+                """ % (col_name,table_name)
+    df = pd.read_sql_query(query, connection)
+    for col_out in df :
+        return type(df[col_out][0])
+
 def get_col_values (connection,col_name,table_name) :
     """
-    Gets values of a clomun, goven table and column name
+    Gets values of a clomun, given table and column name
     """
     cursor = connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cursor.execute("""SELECT %s
@@ -138,6 +160,7 @@ def get_col_values (connection,col_name,table_name) :
         else :
             ret_vals.append(eval(str(val[col_name])))
     return ret_vals
+    
 
 def get_table_dict(connection, tables):
     """
@@ -152,18 +175,24 @@ def get_table_dict(connection, tables):
 
 def get_c_and_lists(connection,table_dict,out) :
     
-    distinct_col_values = {}
-    for table in table_dict :
-            for col in table_dict[table]:
-                distinct_col_values[table + "." + col] = set(get_col_values(connection,col,table))
-
     ret_dict = {}
     for col_out in out :
-        matching_cols = []
-        for col in distinct_col_values:
-            if set(out[col_out]).issubset(distinct_col_values[col]) :
-                matching_cols.append(col)
-        ret_dict[col_out] = matching_cols
+        ret_dict[col_out] = []
+
+    col_count = {}
+    for table in table_dict :
+        for col in table_dict[table]:
+            if col == 'tid' : continue
+            col_count[col] = 0
+            col_type = get_col_type(connection,col,table)
+            col_values = set(get_col_values(connection,col,table))
+            for col_out in ret_dict : 
+                # print("col type", col_type)
+                # print("col out type", type(out[col_out][0]))
+                if(col_type == type(out[col_out][0])):
+                    if set(out[col_out]).issubset(col_values):
+                        ret_dict[col_out].append(table + "." + col + "." + str(col_count[col]))
+                        col_count[col] += 1
 
     return ret_dict
 
@@ -261,7 +290,7 @@ def bottom_up_prune(tree,root,prev_node,is_star) :
     return tree
     
 
-def gen_instance_trees(connection,possib,depth) : 
+def gen_instance_trees(connection,cand_dict,depth) : 
 
     tables = get_tables(connection)
     table_dict = get_table_dict(connection,tables)
@@ -274,32 +303,37 @@ def gen_instance_trees(connection,possib,depth) :
     for table in table_dict :
         table_count[table] = 0
 
-    for col in possib :
-        table_count,tree = get_instance_tree(table_count,col,foreign_key_dict,primary_key_dict,depth)
-        tree_dict[col] = tree
+    for col_out in cand_dict :
+        tree_dict[col_out] = {}
+        for col in cand_dict[col_out]:
+            table_count,tree = get_instance_tree(table_count,col,foreign_key_dict,primary_key_dict,depth)
+            tree_dict[col_out][col] = tree
     
     star_ctrs = set([table for table in table_dict])
-    for col_out in tree_dict :
-        tree = tree_dict[col_out]
-        star_ctrs = star_ctrs.intersection(set([table.split('_')[0] for table in tree.nodes()]))
 
     for col_out in tree_dict :
-        tree = tree_dict[col_out]
-        root = list(tree.nodes())[0]
-        attr = {}
-        for node in list(tree.nodes()):
-            attr[node] = {}
-            if((node.split('_')[0] in star_ctrs)): attr[node]["star"] = 1
-            else: attr[node]["star"] = 0
-        nx.set_node_attributes(tree,attr)
+        for col in tree_dict[col_out]:
+            tree = tree_dict[col_out][col]
+            star_ctrs = star_ctrs.intersection(set([table.split('_')[0] for table in tree.nodes()]))
+
+    for col_out in tree_dict :
+        for col in tree_dict[col_out]:
+            tree = tree_dict[col_out][col]
+            attr = {}
+            for node in list(tree.nodes()):
+                attr[node] = {}
+                if((node.split('_')[0] in star_ctrs)): attr[node]["star"] = 1
+                else: attr[node]["star"] = 0
+            nx.set_node_attributes(tree,attr)
     
     for col_out in tree_dict : 
-        is_star = nx.get_node_attributes(tree_dict[col_out],'star')
-        pruned_tree = bottom_up_prune(tree_dict[col_out],list(tree_dict[col_out].nodes())[0],None,is_star)
-        tree_dict[col_out] = pruned_tree
-        # nx.draw(pruned_tree,with_labels=True)
-        # plt.show()
-    
+        for col in tree_dict[col_out]:
+            tree = tree_dict[col_out][col]
+            is_star = nx.get_node_attributes(tree,'star')
+            tree = bottom_up_prune(tree,list(tree.nodes())[0],None,is_star)
+            # nx.draw(pruned_tree,with_labels=True)
+            # plt.show()
+        
     return star_ctrs,tree_dict
 
 def get_tid_util(tree,prev_node,cur_node,attr,conn) :
@@ -346,19 +380,20 @@ def get_tid_lists(tree,conn,val) :
     for node in tree[root] : 
         attr,tree = get_tid_util (tree,root,node,attr,conn)
     nx.set_node_attributes(tree,attr)
-    return tree
 
-def ExploreInstanceTree(conn,tree,val) :
-    tree = get_tid_lists(tree,conn,val) 
-    tree = del_empty_tid(tree) 
-    # tids = nx.get_node_attributes(tree,'tid')
-    # pos = nx.spring_layout(tree)
-    # nx.draw(tree, pos)
-    # nx.draw_networkx_labels(tree, pos, labels = tids)
-    # plt.show()
+def ExploreInstanceTree(conn,tree_dict,row) :
+    keys = list(tree_dict.keys())
+    for i in range(len(keys)):
+        col_out = keys[i]
+        val = row[i]
+        for col in tree_dict[col_out] :
+            tree = tree_dict[col_out][col]
+            get_tid_lists(tree,conn,val) 
+            del_empty_tid(tree) 
+            # draw_tree(tree)
 
 def draw_tree(tree) :
-    attr = nx.get_node_attributes(tree,'star')
+    attr = nx.get_node_attributes(tree,'tid')
     pos = nx.spring_layout(tree)
     nx.draw(tree, pos,with_labels=True)
     nx.draw_networkx_labels(tree, pos, labels = attr)
@@ -367,7 +402,6 @@ def draw_tree(tree) :
 def del_empty_tid(tree) :
     empty_nodes = [x for x,y in tree.nodes(data=True) if len(y['tid'])==0]
     tree.remove_nodes_from(empty_nodes)
-    return tree
 
 def get_all_possibilities(c_and_dict,keys) : 
     if len(keys)==0 : return [[]]
@@ -380,21 +414,22 @@ def get_all_possibilities(c_and_dict,keys) :
 def get_valid(tree_dict,star,is_table_star):
     valid = {}
     valid[star] = {} # valid list for star
-    for col in tree_dict:
-        tree = tree_dict[col]
-        tids = nx.get_node_attributes(tree,'tid')
-        is_star = nx.get_node_attributes(tree,'star')
-        for node in list(tree.nodes()) :
-            if((node.split('_')[0]==star and is_star[node] and is_table_star) or (node.split('_')[0]==star and not is_table_star)):
-                for tid in tids[node]:
-                    if(tid not in valid[star]):
-                        valid[star][tid] = {} # inverted list for star
-                        valid[star][tid][col] = set([node])
-                    else :
-                        if(col not in valid[star][tid]):
-                            valid[star][tid][col] = set([node])
+    for col_out in tree_dict:
+        for col in tree_dict[col_out]:
+            tree = tree_dict[col_out][col]
+            tids = nx.get_node_attributes(tree,'tid')
+            is_star = nx.get_node_attributes(tree,'star')
+            for node in list(tree.nodes()) :
+                if((node.split('_')[0]==star and is_star[node] and is_table_star) or (node.split('_')[0]==star and not is_table_star)):
+                    for tid in tids[node]:
+                        if(tid not in valid[star]):
+                            valid[star][tid] = {} # inverted list for star
+                            valid[star][tid][col_out] = set([node])
                         else :
-                            valid[star][tid][col].add(node)
+                            if(col_out not in valid[star][tid]):
+                                valid[star][tid][col_out] = set([node])
+                            else :
+                                valid[star][tid][col_out].add(node)
     tid_keys = [k for k in valid[star].keys()]
     if is_table_star : 
         for tid in tid_keys :
@@ -424,12 +459,6 @@ def cross_tuple_prune(valid,prev_valid,star):
         else :
             for col in prev_valid[star][tid]:
                 prev_valid[star][tid][col] = prev_valid[star][tid][col].union(valid[star][tid][col])
-        # if tid not in valid[star] : del prev_valid[star][tid]
-        # else : 
-        # for col in prev_valid[star][tid]:
-        #     if tid in valid[star] : 
-        #         if col in valid[star][tid] : 
-        #             prev_valid[star][tid][col] = prev_valid[star][tid][col].intersection(valid[star][tid][col])
     return prev_valid    
 
 def updateStarCtrs(tree_dict,star,prev_valid):
@@ -441,22 +470,23 @@ def updateStarCtrs(tree_dict,star,prev_valid):
     # print("\nnew valid")
     # print(new_valid)
     # print("-----------------------------------------------------------------------------\n")
-    for col in tree_dict:
-        tree = tree_dict[col]
-        is_star = nx.get_node_attributes(tree,'star')
-        star_nodes = [x for x,y in tree.nodes(data=True) 
-                             if (y['star']==1 and x.split('_')[0]==star)]
-        updated_candidates_for_star = set()
-        for tid in new_valid[star] :
-            for table in new_valid[star][tid][col]:
-                updated_candidates_for_star.add(table)
-        for star_node in star_nodes :
-            if star_node not in updated_candidates_for_star and star_node.split('_')[0] == star:
-                is_star[star_node] = 0
-        nx.set_node_attributes(tree,is_star,'star')
-        # draw_tree(tree)
-        tree_dict[col] = bottom_up_prune(tree,list(tree.nodes())[0],None,is_star)
-        # draw_tree(tree_dict[col])
+    for col_out in tree_dict:
+        for col in tree_dict[col_out] :
+            tree = tree_dict[col_out][col]
+            is_star = nx.get_node_attributes(tree,'star')
+            star_nodes = [x for x,y in tree.nodes(data=True) 
+                                if (y['star']==1 and x.split('_')[0]==star)]
+            updated_candidates_for_star = set()
+            for tid in new_valid[star] :
+                for table in new_valid[star][tid][col_out]:
+                    updated_candidates_for_star.add(table)
+            for star_node in star_nodes :
+                if star_node not in updated_candidates_for_star and star_node.split('_')[0] == star:
+                    is_star[star_node] = 0
+            nx.set_node_attributes(tree,is_star,'star')
+            # draw_tree(tree)
+            bottom_up_prune(tree,list(tree.nodes())[0],None,is_star)
+            # draw_tree(tree)
     return new_valid,tree_dict
 
 def get_starred_set(valid) :
@@ -483,12 +513,14 @@ def merge_stars(star_list,tree_dict) :
     keys = list(tree_dict.keys())
     merged_tree_cols = {}
     for i in range(len(keys)):
-        col = keys[i]
-        tree = tree_dict[col]
+        col_out = keys[i]
+        star = star_list[i]
+        for col in tree_dict[col_out] :
+            tree = tree_dict[col_out][col]
+            if star in list(tree.nodes()): break
         tree_cols = nx.get_node_attributes(tree,'col')
         root = list(tree.nodes())[0]
         merged_tree_cols[root] = tree_cols[root]
-        star = star_list[i]
         if(star != root): 
             try :
                 path = nx.Graph(tree.subgraph(list(nx.all_simple_paths(tree,root,star))[0]))
@@ -557,7 +589,7 @@ def merge(graph,node1,node2) :
     graph.remove_node(node2)
 
 def execute_query(query) :
-    conn = psycopg2.connect("dbname=tpch host='localhost' user='ananya' password='*Rasika0507'")
+    conn = psycopg2.connect("dbname=tpch2 host='localhost' user='ananya' password='*Rasika0507'")
     dat = pd.read_sql_query(query, conn)
     return dat
 
@@ -586,12 +618,9 @@ def get_query_from_graph (graph) :
             elif (table_1 == node2.split('_')[0]) :
                 query += node2 + "." + join[0].split('.')[1] + "=" + node1 + "." + join[1].split('.')[1] + " and "      
         query = query.strip(" and ")
-    # print(query)
     return query
 
 def df_equals(df1,df2) :
-    # print(df1)
-    # print(df2)
     vals_df1 = df1.sort_index(axis=1).values
     vals_df2 = df2.sort_index(axis=1).values
     if(len(vals_df1) != len(vals_df2)): return False
