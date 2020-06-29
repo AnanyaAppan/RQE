@@ -431,7 +431,7 @@ SELECT supplier_0.s_name, supplier_1.s_name FROM supplier supplier_0 , nation na
 
 -----------------------------------------------------------------------------------------------------------
 
-SELECT P1.p_name , P2.p_name
+SELECT P1.p_name , P2.p_name, L.l_discount
 FROM part P1, part P2, partsupp PS1, partsupp PS2, supplier S, lineitem L
 where P1.p_partkey = PS1.ps_partkey and PS1.ps_suppkey = S.s_suppkey and S.s_suppkey = L.l_suppkey and S.s_suppkey = PS2.ps_suppkey and PS2.ps_partkey = P2.p_partkey
 

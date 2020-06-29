@@ -7,6 +7,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import sys
 
+alpha = 10000
+
 def post_process(tables,connection) :
     cursor = connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     for table in tables :
@@ -139,7 +141,42 @@ def get_col_type (connection,col_name,table_name) :
                 """ % (col_name,table_name)
     df = pd.read_sql_query(query, connection)
     for col_out in df :
-        return type(df[col_out][0])
+        if(type(df[col_out][0]) == date): return str
+        else: return type(df[col_out][0])
+
+def enclose_with_quotes(string) :
+    return "'" + string + "'"
+
+def list_to_string(values) :
+    val_type = type(values[0])
+    ret = ""
+    if(val_type == float or val_type == int):
+        ret = ','.join([str(value) for value in values]).strip(',')
+    else :
+        ret = ','.join([enclose_with_quotes(value) for value in values]).strip(',')
+    ret = '(' + ret + ')'
+    return ret
+
+def get_col_values_from_list (connection,col_name,table_name,values) :
+    """
+    Gets values of a clomun, given table and column name
+    """
+    cursor = connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cursor.execute("""SELECT DISTINCT %s
+                      FROM %s
+                      WHERE %s IN %s
+                      """ % (col_name,table_name,col_name,list_to_string(values)))
+    vals = cursor.fetchall()
+    cursor.close()
+    ret_vals = []
+    for val in vals :
+        if type(val[col_name]) == str :
+            ret_vals.append(val[col_name])
+        elif type(val[col_name]) == date :
+            ret_vals.append(str(val[col_name]))
+        else :
+            ret_vals.append(eval(str(val[col_name])))
+    return ret_vals
 
 def get_col_values (connection,col_name,table_name) :
     """
@@ -177,6 +214,7 @@ def get_c_and_lists(connection,table_dict,out) :
     
     ret_dict = {}
     for col_out in out :
+        if(col_out == 'tid'): continue
         ret_dict[col_out] = []
 
     col_count = {}
@@ -185,11 +223,10 @@ def get_c_and_lists(connection,table_dict,out) :
             if col == 'tid' : continue
             col_count[col] = 0
             col_type = get_col_type(connection,col,table)
-            col_values = set(get_col_values(connection,col,table))
+            col_values = set()
             for col_out in ret_dict : 
-                # print("col type", col_type)
-                # print("col out type", type(out[col_out][0]))
                 if(col_type == type(out[col_out][0])):
+                    if col_values == set() : col_values = set(get_col_values(connection,col,table))
                     if set(out[col_out]).issubset(col_values):
                         ret_dict[col_out].append(table + "." + col + "." + str(col_count[col]))
                         col_count[col] += 1
@@ -228,7 +265,33 @@ def get_primary_key_dict(foregin_key_dict) :
                 ret_dict[primary_table].append(d)
     return ret_dict
 
+def get_join_graph(primary_key_dict) :
+    G = nx.Graph()
+    for table in primary_key_dict:
+        for fk_rel in primary_key_dict[table]:
+            foreign_table = fk_rel['foreign_table']
+            G.add_edge(table,foreign_table)
+            G[table][foreign_table]['join'] = [table + "." + fk_rel['primary_col'],
+      
+                                                  foreign_table + "." + fk_rel['foreign_col']] 
+    nodes = list(G.nodes())
+    for i in range(len(nodes)):
+        for j in range(i+1,len(nodes)):
+            node1 = nodes[i]
+            node2 = nodes[j]
+            paths = list(nx.all_simple_paths(G, source=node1, target=node2))
+            for path in paths:
+                if(len(path)>2):
+                    G.add_edge(node1,node2)
+                    col1 = G[node1][path[1]]['join'][0]
+                    col2 = G[path[-2]][node2]['join'][1]
+                    G[node1][node2]['join'] = [col1,col2]
+    draw_tree(G)
+    return G
+
+
 def get_instance_tree(table_count,col,foreign_key_dict,primary_key_dict,depth) :
+    joinG = get_join_graph(primary_key_dict)
     table_name = col.split('.')[0]
     col_name = col.split('.')[1]
     G = nx.Graph()
@@ -238,6 +301,7 @@ def get_instance_tree(table_count,col,foreign_key_dict,primary_key_dict,depth) :
     G.add_node(table_name + '_' + str(table_count[table_name]))
     attr[table_name + '_' + str(table_count[table_name])]['col'] = [col_name]
     attr[table_name + '_' + str(table_count[table_name])]['star'] = 1
+    attr[table_name + '_' + str(table_count[table_name])]['table'] = table_name
     queue = []
     queue.append(table_name + '_' + str(table_count[table_name]))
     table_count[table_name] += 1
@@ -256,6 +320,7 @@ def get_instance_tree(table_count,col,foreign_key_dict,primary_key_dict,depth) :
                             attr[table_name + '_' + str(table_count[table_name])] = {}
                         attr[table_name + '_' + str(table_count[table_name])]['col'] = None
                         attr[table_name + '_' + str(table_count[table_name])]['star'] = 1
+                        attr[table_name + '_' + str(table_count[table_name])]['table'] = table_name
                         new_queue.append(table_name + '_' + str(table_count[table_name]))
                         table_count[table_name] += 1
             except :
@@ -271,6 +336,7 @@ def get_instance_tree(table_count,col,foreign_key_dict,primary_key_dict,depth) :
                             attr[table_name + '_' + str(table_count[table_name])] = {}
                         attr[table_name + '_' + str(table_count[table_name])]['col'] = None
                         attr[table_name + '_' + str(table_count[table_name])]['star'] = 1
+                        attr[table_name + '_' + str(table_count[table_name])]['table'] = table_name
                         new_queue.append(table_name + '_' + str(table_count[table_name]))
                         table_count[table_name] += 1
             except : 
@@ -283,9 +349,8 @@ def bottom_up_prune(tree,root,prev_node,is_star) :
     sub_trees = [node for node in tree[root]]
     for node in sub_trees :
         if(node != prev_node): tree = bottom_up_prune(tree,node,root,is_star)
-    if (list(tree[root])==[prev_node] or len(list(tree[root]))==0 and root != list(tree.nodes())[0]) :
+    if ((list(tree[root])==[prev_node] or len(list(tree[root]))==0) and root != list(tree.nodes())[0]) :
         if is_star[root] == 0 : 
-            # print("removed ",root)
             tree.remove_node(root)
     return tree
     
@@ -312,9 +377,11 @@ def gen_instance_trees(connection,cand_dict,depth) :
     star_ctrs = set([table for table in table_dict])
 
     for col_out in tree_dict :
+        star_candidates = set()
         for col in tree_dict[col_out]:
             tree = tree_dict[col_out][col]
-            star_ctrs = star_ctrs.intersection(set([table.split('_')[0] for table in tree.nodes()]))
+            star_candidates = star_candidates.union(set(table.split('_')[0] for table in tree.nodes()))
+        star_ctrs = star_ctrs.intersection(star_candidates)
 
     for col_out in tree_dict :
         for col in tree_dict[col_out]:
@@ -325,36 +392,36 @@ def gen_instance_trees(connection,cand_dict,depth) :
                 if((node.split('_')[0] in star_ctrs)): attr[node]["star"] = 1
                 else: attr[node]["star"] = 0
             nx.set_node_attributes(tree,attr)
-    
-    for col_out in tree_dict : 
-        for col in tree_dict[col_out]:
-            tree = tree_dict[col_out][col]
             is_star = nx.get_node_attributes(tree,'star')
             tree = bottom_up_prune(tree,list(tree.nodes())[0],None,is_star)
-            # nx.draw(pruned_tree,with_labels=True)
-            # plt.show()
         
     return star_ctrs,tree_dict
 
-def get_tid_util(tree,prev_node,cur_node,attr,conn) :
+def get_tid_util(tree,prev_node,cur_node,attr,conn, wildcard) :
     if(len(attr[prev_node]['tid'])==0) : return attr,tree
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur_table = cur_node.split('_')[0]
-    prev_table = prev_node.split('_')[0]
-    query = """SELECT DISTINCT %s
-                FROM %s,%s
-                WHERE %s = %s
-                AND %s IN %s
-            """%(cur_table+".TID",cur_table,prev_table,tree[prev_node][cur_node]["join"][0],
-                tree[prev_node][cur_node]["join"][1],prev_table + ".TID" ,
-                "(" + ",".join(attr[prev_node]['tid']).strip(",") + ")")
-    cursor.execute(query)
-    tables = cursor.fetchall()
-    tables = [str(x['tid']) for x in tables]
-    cursor.close()
-    attr[cur_node]['tid'] = tables
+    if not wildcard : 
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur_table = cur_node.split('_')[0]
+        prev_table = prev_node.split('_')[0]
+        query = """SELECT DISTINCT %s
+                    FROM %s,%s
+                    WHERE %s = %s
+                    AND %s IN %s
+                """%(cur_table+".TID",cur_table,prev_table,tree[prev_node][cur_node]["join"][0],
+                    tree[prev_node][cur_node]["join"][1],prev_table + ".TID" ,
+                    "(" + ",".join(attr[prev_node]['tid']).strip(",") + ")")
+        cursor.execute(query)
+        tids = cursor.fetchall()
+        tids = [str(x['tid']) for x in tids]
+        if len(tids) > alpha : 
+            wildcard = True
+            tids = ['wc']
+        cursor.close()
+    else :
+        tids = ['wc']
+    attr[cur_node]['tid'] = tids
     for node in tree[cur_node] :
-        if(node != prev_node): attr,tree = get_tid_util(tree,cur_node,node,attr,conn)
+        if(node != prev_node): attr,tree = get_tid_util(tree,cur_node,node,attr,conn, wildcard)
     return attr,tree
 
 
@@ -373,30 +440,37 @@ def get_tid_lists(tree,conn,val) :
     cursor.execute("""SELECT DISTINCT TID
                       FROM %s
                       WHERE %s = %s"""%(root_table,cols[root][0],str(val)))
-    tables = cursor.fetchall()
-    tables = [str(x['tid']) for x in tables]
+    tids = cursor.fetchall()
+    tids = [str(x['tid']) for x in tids]
     cursor.close()
-    attr[root]["tid"] += tables
+    if len(tids) > alpha : 
+        wildcard = True
+        tids = ['wc']
+    else: wildcard = False
+    attr[root]["tid"] += tids
     for node in tree[root] : 
-        attr,tree = get_tid_util (tree,root,node,attr,conn)
+        attr,tree = get_tid_util (tree,root,node,attr,conn,wildcard)
     nx.set_node_attributes(tree,attr)
 
-def ExploreInstanceTree(conn,tree_dict,row) :
+def ExploreInstanceTree(conn,tree_dict,row,blacklist) :
     keys = list(tree_dict.keys())
     for i in range(len(keys)):
         col_out = keys[i]
         val = row[i]
         for col in tree_dict[col_out] :
-            tree = tree_dict[col_out][col]
-            get_tid_lists(tree,conn,val) 
-            del_empty_tid(tree) 
-            # draw_tree(tree)
+            if(val not in blacklist[col_out][col]):
+                tree = tree_dict[col_out][col]
+                get_tid_lists(tree,conn,val)
+                wildcard_nodes = [x for x,y in tree.nodes(data=True) if y['tid']==['wc']]
+                if(wildcard_nodes != []): blacklist[col_out][col].append(val)
+                del_empty_tid(tree) 
 
 def draw_tree(tree) :
     attr = nx.get_node_attributes(tree,'tid')
     pos = nx.spring_layout(tree)
     nx.draw(tree, pos,with_labels=True)
-    nx.draw_networkx_labels(tree, pos, labels = attr)
+    # nx.draw_networkx_edge_labels(tree,pos=nx.spring_layout(tree))
+    # nx.draw_networkx_labels(tree, pos, labels = attr)
     plt.show()
 
 def del_empty_tid(tree) :
@@ -414,13 +488,15 @@ def get_all_possibilities(c_and_dict,keys) :
 def get_valid(tree_dict,star,is_table_star):
     valid = {}
     valid[star] = {} # valid list for star
+    wc_dict = {}
     for col_out in tree_dict:
+        wc_dict[col_out] = set()
         for col in tree_dict[col_out]:
             tree = tree_dict[col_out][col]
             tids = nx.get_node_attributes(tree,'tid')
             is_star = nx.get_node_attributes(tree,'star')
             for node in list(tree.nodes()) :
-                if((node.split('_')[0]==star and is_star[node] and is_table_star) or (node.split('_')[0]==star and not is_table_star)):
+                if((node.split('_')[0]==star and is_star[node] and is_table_star) or (node.split('_')[0]==star and not is_table_star)): 
                     for tid in tids[node]:
                         if(tid not in valid[star]):
                             valid[star][tid] = {} # inverted list for star
@@ -430,6 +506,17 @@ def get_valid(tree_dict,star,is_table_star):
                                 valid[star][tid][col_out] = set([node])
                             else :
                                 valid[star][tid][col_out].add(node)
+                    if tids[node] == ['wc'] : 
+                        wc_dict[col_out].add(node)
+
+    for col_out in tree_dict:
+        for tid in valid[star]:
+            if col_out in valid[star][tid] :
+                valid[star][tid][col_out].union(wc_dict[col_out])
+            else :
+                if(wc_dict[col_out] != set()):
+                    valid[star][tid][col_out] = wc_dict[col_out]
+
     tid_keys = [k for k in valid[star].keys()]
     if is_table_star : 
         for tid in tid_keys :
@@ -454,9 +541,9 @@ def cross_tuple_prune(valid,prev_valid,star):
         else :
             prev_valid[star][tid] = valid[star][tid]
     for tid in prev_valid_tids :
-        if tid not in valid_tids :
-            del prev_valid[star][tid]
-        else :
+        # if tid not in valid_tids :
+        #     del prev_valid[star][tid]
+        if tid in valid_tids :
             for col in prev_valid[star][tid]:
                 prev_valid[star][tid][col] = prev_valid[star][tid][col].union(valid[star][tid][col])
     return prev_valid    
@@ -464,12 +551,7 @@ def cross_tuple_prune(valid,prev_valid,star):
 def updateStarCtrs(tree_dict,star,prev_valid):
 
     valid = get_valid(tree_dict,star,True)
-    # print("valid")
-    # print(valid)
     new_valid = cross_tuple_prune(valid,prev_valid,star)
-    # print("\nnew valid")
-    # print(new_valid)
-    # print("-----------------------------------------------------------------------------\n")
     for col_out in tree_dict:
         for col in tree_dict[col_out] :
             tree = tree_dict[col_out][col]
@@ -505,18 +587,25 @@ def substitute_node(G,old_node,new_node):
         G[new_node][node]['join'] = G[old_node][node]['join']
     G.remove_node(old_node)
 
+def sort_stars(star):
+    val = int(star.split('_')[1])
+    return val
+
 def merge_stars(star_list,tree_dict) :
+    star_list.sort()
+    star_list = sorted(star_list,key=sort_stars)
     star = star_list[0].split('_')[0]
     table_nos = '_'.join([x.split('_')[1] for x in star_list])
     merged_star = star + '_' + table_nos
     merged_tree = nx.Graph()
-    keys = list(tree_dict.keys())
     merged_tree_cols = {}
+    keys = list(tree_dict.keys())
     for i in range(len(keys)):
         col_out = keys[i]
         star = star_list[i]
         for col in tree_dict[col_out] :
             tree = tree_dict[col_out][col]
+            # draw_tree(tree)
             if star in list(tree.nodes()): break
         tree_cols = nx.get_node_attributes(tree,'col')
         root = list(tree.nodes())[0]
@@ -528,6 +617,7 @@ def merge_stars(star_list,tree_dict) :
                 print(root)
                 print(star)
                 draw_tree(tree)
+                return None
         else : 
             path = nx.Graph(tree.subgraph(root))
             if(merged_star in merged_tree_cols): merged_tree_cols[merged_star] += tree_cols[root]
@@ -562,6 +652,9 @@ def initialize_tid_lists(tree, merge) :
                 for candidate in merge[table][tid][col] :
                     if candidate in nodes:
                         tids[candidate].add(tid)
+                        if(len(tids[candidate])>alpha) : 
+                            tids[candidate] = set(['wc'])
+                            break
     nx.set_node_attributes(tree,tids,'tid')
 
 def merge(graph,node1,node2) :
@@ -581,19 +674,20 @@ def merge(graph,node1,node2) :
         col[new_node] = col[node1]
     elif(node2 in col) :
         col[new_node] = col[node2]
-    new_node_tid = tids[node1].intersection(tids[node2])
+    if(tids[node1] == set(['wc']) and tids[node2] != set(['wc'])): new_node_tid = tids[node2]
+    if(tids[node1] != set(['wc']) and tids[node2] == set(['wc'])): new_node_tid = tids[node1]
+    else : new_node_tid = tids[node1].intersection(tids[node2])
     tids[new_node] = new_node_tid
     nx.set_node_attributes(graph,tids,'tid')
     nx.set_node_attributes(graph,col,'col')
     graph.remove_node(node1)
     graph.remove_node(node2)
 
-def execute_query(query) :
-    conn = psycopg2.connect("dbname=tpch2 host='localhost' user='ananya' password='*Rasika0507'")
+def execute_query(query,conn) :
     dat = pd.read_sql_query(query, conn)
     return dat
 
-def get_query_from_graph (graph) :
+def get_query_from_graph (graph,limit) :
     nodes = list(graph.nodes())
     query = " SELECT "
     col = nx.get_node_attributes(graph,'col')
@@ -618,54 +712,91 @@ def get_query_from_graph (graph) :
             elif (table_1 == node2.split('_')[0]) :
                 query += node2 + "." + join[0].split('.')[1] + "=" + node1 + "." + join[1].split('.')[1] + " and "      
         query = query.strip(" and ")
+    query += " LIMIT %d" % (limit) 
     return query
 
-def df_equals(df1,df2) :
+# def df_equals(query,conn) :
+#     iter1 = pd.read_sql_query(query , conn, chunksize=1000)
+#     iter2 = pd.read_csv("query.csv",header=0,index_col=0, chunksize=1000)
+#     df1 = next(iter1,None)
+#     df2 = next(iter2,None)
+#     while(df1 != None and df2 != None):
+#         vals_df1 = df1.sort_index(axis=1).values
+#         vals_df2 = df2.sort_index(axis=1).values
+#         if(len(vals_df1) != len(vals_df2)): return False
+#         if(len(vals_df1[0]) != len(vals_df2[0])): return False
+#         for i in range(len(vals_df1)) :
+#             for j in range(len(vals_df1[0])):
+#                 if(str(vals_df1[i][j]) != str(vals_df2[i][j])):
+#                     del vals_df1
+#                     del vals_df2
+#                     return False
+#         del vals_df1
+#         del vals_df2
+#         df1 = next(iter1,None)
+#         df2 = next(iter2,None) 
+#     if df1 == None and df2 == None : 
+#         return True
+#     return False
+
+def df_equals(query,conn,df) :
+    df1 = pd.read_sql_query(query , conn)
+    df2 = df
+    df1 = df1.sort_values(df1.columns.tolist())
+    df2 = df2.sort_values(df2.columns.tolist())
     vals_df1 = df1.sort_index(axis=1).values
     vals_df2 = df2.sort_index(axis=1).values
-    if(len(vals_df1) != len(vals_df2)): return False
-    if(len(vals_df1[0]) != len(vals_df2[0])): return False
+    if(len(df1.index) != len(df2.index)) : return False
+    if(len(df1.columns) != len(df2.columns)) : return False
     for i in range(len(vals_df1)) :
         for j in range(len(vals_df1[0])):
             if(str(vals_df1[i][j]) != str(vals_df2[i][j])):
+                del vals_df1
+                del vals_df2
                 return False
+    del vals_df1
+    del vals_df2
     return True
 
-def gen_lattice(graph,df,merge_list) :
-    # draw_tree(graph)
-    try :
-        query = get_query_from_graph(graph)
-        res_df = execute_query(query)
-        if df_equals(df,res_df):
-            print(df)
-            print(res_df)
-            return query
-    except : pass
+def gen_lattice(star_graph,merge_list,df,conn):
+    lattice = [star_graph]
+    while(len(lattice)) :
+        new_lattice = []
+        while(len(lattice)):
+            graph = lattice.pop()
+            query = get_query_from_graph(graph,len(df.index)+1)
+            if df_equals(query,conn,df):
+                return query
+            tids = nx.get_node_attributes(graph,'tid')
+            nodes = list(graph.nodes())
+            for i in range(len(nodes)):
+                node1 = nodes[i]
+                for j in range(i+1 , len(nodes)):
+                    node2 = nodes[j]
+                    table1 = node1.split('_')[0] 
+                    table2 = node2.split('_')[0]
+                    if table1 == table2 and (tids[node1] == set(['wc']) or tids[node2] == set(['wc']) or len(tids[node1].intersection(tids[node2]))!=0):
+                        new_graph = nx.Graph(graph)
+                        merge(new_graph,node1,node2)
+                        is_isomorphic = False
+                        for g in new_lattice :
+                            if nx.is_isomorphic(g,new_graph):
+                                is_isomorphic = True
+                                break
+                        if not is_isomorphic :
+                            new_lattice.append(new_graph)
+                        else : new_graph.clear()
+            graph.clear()
+        lattice = new_lattice
 
-    gen_graphs = []
-    nodes = list(graph.nodes())
-    for i in range(len(nodes)):
-        node1 = nodes[i]
-        for j in range(i+1 , len(nodes)):
-            node2 = nodes[j]
-            table1 = node1.split('_')[0] 
-            table2 = node2.split('_')[0]
-            if table1 == table2 and node1 in merge_list[table1] and node2 in merge_list[table1]:
-                new_graph = nx.Graph(graph)
-                merge(new_graph,node1,node2)
-                is_isomorphic = False
-                for g in gen_graphs :
-                    if nx.is_isomorphic(g,new_graph):
-                        is_isomorphic = True
-                        break
-                if not is_isomorphic :
-                    gen_graphs.append(new_graph)
+def initialize_black_list(cand_dict) :
+    blacklist = {}
+    for out_col in cand_dict :
+        blacklist[out_col] = {}
+        for col in cand_dict[out_col]:
+            blacklist[out_col][col] = []
+    return blacklist
 
-    for ele in gen_graphs :
-        ret = gen_lattice(ele,df,merge_list)
-        if(ret != None) :
-            return ret
-    return None
 
 
 
