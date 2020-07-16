@@ -9,22 +9,24 @@ import networkx.algorithms.isomorphism as iso
 def main () :
     start = time.time()
     try:
-        conn = psycopg2.connect("dbname=tpch host='localhost' user='ananya' password='*Rasika0507'")
+        conn = psycopg2.connect("dbname=tpch3 host='localhost' user='ananya' password='*Rasika0507'")
         df = pd.read_csv("query.csv",header=0,index_col=0)
+        df = df.sort_values(df.columns.tolist())
         tables = get_tables(conn)
         table_dict = get_table_dict(conn,tables)
-        # pre_process(table_dict,conn)
-        # print("--------------Pre processing over--------------%f"%(time.time()-start))
-        cand_dict = get_c_and_lists(conn,table_dict,df)
+        pre_process(table_dict,conn)
+        print("--------------Pre processing over--------------%f"%(time.time()-start))
+        cand_dict = get_c_and_lists(conn,start,table_dict,df)
         print(cand_dict)
+        joinGraph = get_join_graph(conn)
         print("----Obtained CAND lists----%f"%(time.time()-start))
-        for depth in range(5):
+        for depth in range(1):
             print("----trying for depth %d----%f"%(depth,time.time()-start))
-            star_ctrs,tree_dict = gen_instance_trees(conn,cand_dict,depth)
+            star_ctrs,tree_dict = gen_instance_trees(conn,cand_dict,joinGraph,depth)
             valid = None
             merge = None
             blacklist = initialize_black_list(cand_dict)
-            theta = df.sample(n=min(5,len(df.index)))
+            theta = df.sample(n=min(1,len(df.index)))
             for _, row in theta.iterrows():
                 ExploreInstanceTree(conn,tree_dict,row,blacklist)
                 print("-------Exploring Instance Tree-------%f"%(time.time()-start))
@@ -46,17 +48,6 @@ def main () :
                     merged_star = merge_stars(s,tree_dict)
                     if merged_star != None : 
                         merged_stars.append(merged_star)
-                    # cols = list(nx.get_node_attributes(merged_star,'col').values())
-                    # table_names = list(nx.get_node_attributes(merged_star,'table').values())
-                    # if merged_star != None : 
-                    #     nm = iso.categorical_node_match(['col','table'],[cols,table_names])
-                    #     flag = True
-                    #     for star in merged_stars:
-                    #         if nx.is_isomorphic(star, merged_star, node_match=nm):
-                    #             flag = False
-                    #             break
-                    #     if flag:
-                    #         merged_stars.append(merged_star)
                 print("-------Obtained merged stars-------%f"%(time.time()-start))
                 for merged_star in merged_stars :
                     initialize_tid_lists(merged_star,merge)
@@ -65,11 +56,14 @@ def main () :
                     print("-------Gen Lattice-------%f"%(time.time()-start))
                     if(query != None):
                         print(query.split('LIMIT')[0])
-                        # post_process(table_dict,conn)
-                        # print("--------------Post processing over--------------%f"%(time.time()-start))
+                        f_out = open("extracted_query.txt","w+")
+                        f_out.write(query.split('LIMIT')[0])
+                        f_out.close()
+                        post_process(table_dict,conn)
+                        print("--------------Post processing over--------------%f"%(time.time()-start))
                         sys.exit()
-        # post_process(table_dict,conn)
-        # print("--------------Post processing over--------------%f"%(time.time()-start))
+        post_process(table_dict,conn)
+        print("--------------Post processing over--------------%f"%(time.time()-start))
 
     except psycopg2.Error as e:
         print(type(e))

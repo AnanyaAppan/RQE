@@ -6,6 +6,7 @@ import networkx as nx
 import matplotlib.pyplot as plt
 import pandas as pd
 import sys
+import time
 
 alpha = 10000
 
@@ -183,7 +184,7 @@ def get_col_values (connection,col_name,table_name) :
     Gets values of a clomun, given table and column name
     """
     cursor = connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cursor.execute("""SELECT %s
+    cursor.execute("""SELECT DISTINCT %s
                       FROM %s
                       """ % (col_name,table_name))
     vals = cursor.fetchall()
@@ -210,7 +211,30 @@ def get_table_dict(connection, tables):
         d[row["table_name"]] = get_columns(connection, row["table_schema"], row["table_name"])
     return d
 
-def get_c_and_lists(connection,table_dict,out) :
+def get_table_values(conn, table) :
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cursor.execute("""SELECT DISTINCT *
+                      FROM %s
+                      """ % (table))
+    table_vals = cursor.fetchall()
+    cursor.close()
+    ret = {}
+    for row in table_vals :
+        for col in row :
+            if col not in ret :
+                ret[col] = set([row[col]])
+            else :
+                ret[col].add(row[col])
+    return ret
+    # for val in vals :
+    #     if type(val[col_name]) == str :
+    #         ret_vals.append(val[col_name])
+    #     elif type(val[col_name]) == date :
+    #         ret_vals.append(str(val[col_name]))
+    #     else :
+    #         ret_vals.append(eval(str(val[col_name])))
+
+def get_c_and_lists(connection,start,table_dict,out) :
     
     ret_dict = {}
     for col_out in out :
@@ -226,10 +250,23 @@ def get_c_and_lists(connection,table_dict,out) :
             col_values = set()
             for col_out in ret_dict : 
                 if(col_type == type(out[col_out][0])):
-                    if col_values == set() : col_values = set(get_col_values(connection,col,table))
+                    if col_values == set() : 
+                        values = get_col_values(connection,col,table)
+                        col_values = set(values)
                     if set(out[col_out]).issubset(col_values):
                         ret_dict[col_out].append(table + "." + col + "." + str(col_count[col]))
                         col_count[col] += 1
+    
+    # for table in table_dict :
+    #     print("----Before obtaining table values----%f"%(time.time()-start))
+    #     table_values = get_table_values(connection,table)
+    #     print("----Obtained table values----%f"%(time.time()-start))
+    #     for col in table_values :
+    #         col_count[col] = 0
+    #         for col_out in ret_dict :
+    #             if set(out[col_out]).issubset(table_values[col]):
+    #                 ret_dict[col_out].append(table + "." + col + "." + str(col_count[col]))
+    #                 col_count[col] += 1
 
     return ret_dict
 
@@ -265,15 +302,40 @@ def get_primary_key_dict(foregin_key_dict) :
                 ret_dict[primary_table].append(d)
     return ret_dict
 
-def get_join_graph(primary_key_dict) :
+def merge_join_graph(G):
+    merged_graph = nx.MultiGraph()
+    nodes = list(G.nodes())
+    tables = [node.split(".")[0] for node in nodes]
+    for table in tables :
+        merged_graph.add_node(table)
+    for table in tables :
+        cols = [node for node in nodes if node.split(".")[0] == table]
+        for col in cols:
+            for x in G[col]:
+                x_table = x.split(".")[0]
+                if(not (((table,x_table) in list(merged_graph.edges())) or ((x_table,table) in list(merged_graph.edges())))):
+                    index = merged_graph.add_edge(table,x_table)
+                    merged_graph[table][x_table][index]['join'] = G[col][x]['join']
+                else:
+                    joins = [merged_graph[table][x_table][index]['join'] for index in merged_graph[table][x_table]]
+                    if G[col][x]['join'] not in joins:
+                        index = merged_graph.add_edge(table,x_table)
+                        merged_graph[table][x_table][index]['join'] = G[col][x]['join']
+    return merged_graph
+
+def get_join_graph(connection) :
+    foreign_keys = get_foreign_keys(connection)
+    primary_keys = get_primary_keys(connection)
+    foreign_key_dict = get_foreign_key_dict(primary_keys,foreign_keys)
+    primary_key_dict = get_primary_key_dict(foreign_key_dict)
     G = nx.Graph()
     for table in primary_key_dict:
         for fk_rel in primary_key_dict[table]:
             foreign_table = fk_rel['foreign_table']
-            G.add_edge(table,foreign_table)
-            G[table][foreign_table]['join'] = [table + "." + fk_rel['primary_col'],
-      
-                                                  foreign_table + "." + fk_rel['foreign_col']] 
+            node1 = table + "." + fk_rel['primary_col']
+            node2 = foreign_table + "." + fk_rel['foreign_col']
+            G.add_edge(node1,node2)
+            G[node1][node2]['join'] = [node1,node2] 
     nodes = list(G.nodes())
     for i in range(len(nodes)):
         for j in range(i+1,len(nodes)):
@@ -283,15 +345,11 @@ def get_join_graph(primary_key_dict) :
             for path in paths:
                 if(len(path)>2):
                     G.add_edge(node1,node2)
-                    col1 = G[node1][path[1]]['join'][0]
-                    col2 = G[path[-2]][node2]['join'][1]
-                    G[node1][node2]['join'] = [col1,col2]
-    draw_tree(G)
-    return G
+                    G[node1][node2]['join'] = [node1,node2]
+    return merge_join_graph(G)
 
 
-def get_instance_tree(table_count,col,foreign_key_dict,primary_key_dict,depth) :
-    joinG = get_join_graph(primary_key_dict)
+def get_instance_tree(table_count,col,joinGraph,depth) :
     table_name = col.split('.')[0]
     col_name = col.split('.')[1]
     G = nx.Graph()
@@ -311,11 +369,10 @@ def get_instance_tree(table_count,col,foreign_key_dict,primary_key_dict,depth) :
             head = queue.pop(0)
             table = head.split('_')[0]
             try :
-                for key in foreign_key_dict[table] :
-                        table_name = key['primary_table']
+                for table_name in joinGraph[table]:
+                    for index in joinGraph[table][table_name]:
                         G.add_edge(head,table_name + '_' + str(table_count[table_name]))
-                        G[head][table_name + '_' + str(table_count[table_name])]["join"] = [table + "." + key['foreign_col']
-                                                                                    ,table_name + "." + key['primary_col']]
+                        G[head][table_name + '_' + str(table_count[table_name])]['join'] = joinGraph[table][table_name][index]['join']
                         if table_name + '_' + str(table_count[table_name]) not in attr :
                             attr[table_name + '_' + str(table_count[table_name])] = {}
                         attr[table_name + '_' + str(table_count[table_name])]['col'] = None
@@ -323,22 +380,35 @@ def get_instance_tree(table_count,col,foreign_key_dict,primary_key_dict,depth) :
                         attr[table_name + '_' + str(table_count[table_name])]['table'] = table_name
                         new_queue.append(table_name + '_' + str(table_count[table_name]))
                         table_count[table_name] += 1
-            except :
-                pass
+            # try :
+            #     for key in foreign_key_dict[table] :
+            #             table_name = key['primary_table']
+            #             G.add_edge(head,table_name + '_' + str(table_count[table_name]))
+            #             G[head][table_name + '_' + str(table_count[table_name])]["join"] = [table + "." + key['foreign_col']
+            #                                                                         ,table_name + "." + key['primary_col']]
+            #             if table_name + '_' + str(table_count[table_name]) not in attr :
+            #                 attr[table_name + '_' + str(table_count[table_name])] = {}
+            #             attr[table_name + '_' + str(table_count[table_name])]['col'] = None
+            #             attr[table_name + '_' + str(table_count[table_name])]['star'] = 1
+            #             attr[table_name + '_' + str(table_count[table_name])]['table'] = table_name
+            #             new_queue.append(table_name + '_' + str(table_count[table_name]))
+            #             table_count[table_name] += 1
+            # except :
+            #     pass
 
-            try :
-                for key in primary_key_dict[table] : 
-                        table_name = key['foreign_table']
-                        G.add_edge(head,table_name + '_' + str(table_count[table_name]))
-                        G[head][table_name + '_' + str(table_count[table_name])]["join"] = [table + "." + key['primary_col']
-                                                                                        ,table_name + "." + key['foreign_col']]
-                        if table_name + '_' + str(table_count[table_name]) not in attr :
-                            attr[table_name + '_' + str(table_count[table_name])] = {}
-                        attr[table_name + '_' + str(table_count[table_name])]['col'] = None
-                        attr[table_name + '_' + str(table_count[table_name])]['star'] = 1
-                        attr[table_name + '_' + str(table_count[table_name])]['table'] = table_name
-                        new_queue.append(table_name + '_' + str(table_count[table_name]))
-                        table_count[table_name] += 1
+            # try :
+            #     for key in primary_key_dict[table] : 
+            #             table_name = key['foreign_table']
+            #             G.add_edge(head,table_name + '_' + str(table_count[table_name]))
+            #             G[head][table_name + '_' + str(table_count[table_name])]["join"] = [table + "." + key['primary_col']
+            #                                                                             ,table_name + "." + key['foreign_col']]
+            #             if table_name + '_' + str(table_count[table_name]) not in attr :
+            #                 attr[table_name + '_' + str(table_count[table_name])] = {}
+            #             attr[table_name + '_' + str(table_count[table_name])]['col'] = None
+            #             attr[table_name + '_' + str(table_count[table_name])]['star'] = 1
+            #             attr[table_name + '_' + str(table_count[table_name])]['table'] = table_name
+            #             new_queue.append(table_name + '_' + str(table_count[table_name]))
+            #             table_count[table_name] += 1
             except : 
                 pass
         queue = new_queue
@@ -355,14 +425,10 @@ def bottom_up_prune(tree,root,prev_node,is_star) :
     return tree
     
 
-def gen_instance_trees(connection,cand_dict,depth) : 
+def gen_instance_trees(connection,cand_dict,joinGraph,depth) : 
 
     tables = get_tables(connection)
     table_dict = get_table_dict(connection,tables)
-    foreign_keys = get_foreign_keys(connection)
-    primary_keys = get_primary_keys(connection)
-    foreign_key_dict = get_foreign_key_dict(primary_keys,foreign_keys)
-    primary_key_dict = get_primary_key_dict(foreign_key_dict)
     tree_dict = {}
     table_count = {}
     for table in table_dict :
@@ -371,7 +437,7 @@ def gen_instance_trees(connection,cand_dict,depth) :
     for col_out in cand_dict :
         tree_dict[col_out] = {}
         for col in cand_dict[col_out]:
-            table_count,tree = get_instance_tree(table_count,col,foreign_key_dict,primary_key_dict,depth)
+            table_count,tree = get_instance_tree(table_count,col,joinGraph,depth)
             tree_dict[col_out][col] = tree
     
     star_ctrs = set([table for table in table_dict])
@@ -566,9 +632,7 @@ def updateStarCtrs(tree_dict,star,prev_valid):
                 if star_node not in updated_candidates_for_star and star_node.split('_')[0] == star:
                     is_star[star_node] = 0
             nx.set_node_attributes(tree,is_star,'star')
-            # draw_tree(tree)
             bottom_up_prune(tree,list(tree.nodes())[0],None,is_star)
-            # draw_tree(tree)
     return new_valid,tree_dict
 
 def get_starred_set(valid) :
@@ -605,11 +669,10 @@ def merge_stars(star_list,tree_dict) :
         star = star_list[i]
         for col in tree_dict[col_out] :
             tree = tree_dict[col_out][col]
-            # draw_tree(tree)
             if star in list(tree.nodes()): break
         tree_cols = nx.get_node_attributes(tree,'col')
         root = list(tree.nodes())[0]
-        merged_tree_cols[root] = tree_cols[root]
+        merged_tree_cols[root] = tree_cols[root].copy()
         if(star != root): 
             try :
                 path = nx.Graph(tree.subgraph(list(nx.all_simple_paths(tree,root,star))[0]))
@@ -620,8 +683,8 @@ def merge_stars(star_list,tree_dict) :
                 return None
         else : 
             path = nx.Graph(tree.subgraph(root))
-            if(merged_star in merged_tree_cols): merged_tree_cols[merged_star] += tree_cols[root]
-            else : merged_tree_cols[merged_star] = tree_cols[root]
+            if(merged_star in merged_tree_cols): merged_tree_cols[merged_star] += tree_cols[root].copy()
+            else : merged_tree_cols[merged_star] = tree_cols[root].copy()
         if(len(keys)>1): substitute_node(path,star,merged_star)
         merged_tree.add_nodes_from(path.nodes())
         merged_tree.add_edges_from(path.edges())
@@ -629,7 +692,6 @@ def merge_stars(star_list,tree_dict) :
             node1 = edge[0]
             node2 = edge[1]
             merged_tree[node1][node2]['join'] = path[node1][node2]['join']
-
     nx.set_node_attributes(merged_tree,merged_tree_cols,'col')
     return merged_tree
 
@@ -694,7 +756,7 @@ def get_query_from_graph (graph,limit) :
     projected_tables = col.keys()
     for projected_table in projected_tables :
         for x in set(col[projected_table]):
-            query += projected_table + '.' + x + ", "
+            query += projected_table + '.' + x + " AS " + projected_table + '_' + x + " , "
     query = query.strip(", ")
     query += " FROM "
     for node in nodes :
@@ -712,51 +774,36 @@ def get_query_from_graph (graph,limit) :
             elif (table_1 == node2.split('_')[0]) :
                 query += node2 + "." + join[0].split('.')[1] + "=" + node1 + "." + join[1].split('.')[1] + " and "      
         query = query.strip(" and ")
-    query += " LIMIT %d" % (limit) 
+    # query += " LIMIT %d" % (limit) 
     return query
-
-# def df_equals(query,conn) :
-#     iter1 = pd.read_sql_query(query , conn, chunksize=1000)
-#     iter2 = pd.read_csv("query.csv",header=0,index_col=0, chunksize=1000)
-#     df1 = next(iter1,None)
-#     df2 = next(iter2,None)
-#     while(df1 != None and df2 != None):
-#         vals_df1 = df1.sort_index(axis=1).values
-#         vals_df2 = df2.sort_index(axis=1).values
-#         if(len(vals_df1) != len(vals_df2)): return False
-#         if(len(vals_df1[0]) != len(vals_df2[0])): return False
-#         for i in range(len(vals_df1)) :
-#             for j in range(len(vals_df1[0])):
-#                 if(str(vals_df1[i][j]) != str(vals_df2[i][j])):
-#                     del vals_df1
-#                     del vals_df2
-#                     return False
-#         del vals_df1
-#         del vals_df2
-#         df1 = next(iter1,None)
-#         df2 = next(iter2,None) 
-#     if df1 == None and df2 == None : 
-#         return True
-#     return False
 
 def df_equals(query,conn,df) :
     df1 = pd.read_sql_query(query , conn)
     df2 = df
-    df1 = df1.sort_values(df1.columns.tolist())
-    df2 = df2.sort_values(df2.columns.tolist())
-    vals_df1 = df1.sort_index(axis=1).values
-    vals_df2 = df2.sort_index(axis=1).values
-    if(len(df1.index) != len(df2.index)) : return False
+    df1 = df1.sort_index(axis=1)
+    df2 = df2.sort_index(axis=1)
+    print(df1)
+    print(df2)
+    vals_df1 = [set([str(j) for j in i]) for i in df1.values]
+    vals_df2 = [set([str(j) for j in i]) for i in df2.values]
     if(len(df1.columns) != len(df2.columns)) : return False
-    for i in range(len(vals_df1)) :
-        for j in range(len(vals_df1[0])):
-            if(str(vals_df1[i][j]) != str(vals_df2[i][j])):
-                del vals_df1
-                del vals_df2
-                return False
+    # if(len(df1.index) != len(df2.index)): return False # required if not considering subset
+    for row in vals_df2 :
+        if row in vals_df1 :
+            vals_df1.remove(row)
+        else :
+            del vals_df1
+            del vals_df2
+            return False
+    # required if not considering subset
+    # if len(vals_df1.index) != 0 : 
+    #     del vals_df1
+    #     del vals_df2
+    #     return False
     del vals_df1
     del vals_df2
     return True
+    
 
 def gen_lattice(star_graph,merge_list,df,conn):
     lattice = [star_graph]
